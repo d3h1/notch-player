@@ -1,4 +1,5 @@
 import AppKit
+import Combine
 import SwiftUI
 
 /// Where the pointer is over the open panel.
@@ -12,6 +13,15 @@ final class PointerState: ObservableObject {
     @Published var location: CGPoint?
     /// Areas that show the pointing-hand cursor, reported by the views.
     var handFrames: [CGRect] = []
+    /// Scroll-wheel and trackpad movement over the open panel, in points;
+    /// positive means scrolling toward the top.
+    let scrolled = PassthroughSubject<CGFloat, Never>()
+}
+
+extension EnvironmentValues {
+    /// The visible part of a scrolling area: hover and clicks only count
+    /// inside it, not on content scrolled out of view.
+    @Entry var hoverClip: CGRect?
 }
 
 extension View {
@@ -27,13 +37,15 @@ private struct PointerHoverModifier: ViewModifier {
     let action: (Bool) -> Void
 
     @EnvironmentObject private var pointer: PointerState
+    @Environment(\.hoverClip) private var clip
     @State private var frame: CGRect = .zero
 
     func body(content: Content) -> some View {
-        let inside = pointer.location.map { frame.contains($0) } ?? false
+        let visible = clip.map { frame.intersection($0) } ?? frame
+        let inside = pointer.location.map { visible.contains($0) } ?? false
         content
             .onGeometryChange(for: CGRect.self) { $0.frame(in: .named(PanelSpace.name)) } action: { frame = $0 }
-            .preference(key: HandFramesKey.self, value: showsHand && frame != .zero ? [frame] : [])
+            .preference(key: HandFramesKey.self, value: showsHand && !visible.isEmpty ? [visible] : [])
             .onChange(of: inside) { _, isInside in action(isInside) }
     }
 }

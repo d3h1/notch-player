@@ -1,0 +1,65 @@
+#!/usr/bin/osascript -l JavaScript
+// Sends a Claude Code or Cursor hook event to Notch Player.
+//
+// Use as the hook command: `notch-notify claude` or `notch-notify cursor`.
+// The hook's JSON arrives on stdin. Nothing happens if Notch Player isn't
+// running.
+ObjC.import('Foundation')
+
+function run(argv) {
+  const source = argv[0] || 'claude'
+  const data = $.NSFileHandle.fileHandleWithStandardInput.readDataToEndOfFile
+  let input = {}
+  try {
+    input = JSON.parse($.NSString.alloc.initWithDataEncoding(data, $.NSUTF8StringEncoding).js || '{}')
+  } catch (e) {}
+
+  const roots = input.workspace_roots || []
+  const folder = (input.cwd || roots[0] || '').split('/').filter(Boolean).pop() || ''
+  let app, appPath, title, body = folder
+  if (source === 'cursor') {
+    app = 'Cursor'
+    title = { aborted: 'Cursor stopped', error: 'Cursor hit an error' }[input.status] || 'Cursor finished'
+  } else {
+    // Show it as the app Claude Code runs in (the Claude app, Cursor, a
+    // terminal…), so Claude in Cursor is told apart from the Claude app.
+    appPath = hostAppPath()
+    app = appPath ? appPath.split('/').pop().replace(/\.app$/, '') : 'Claude'
+    if (input.hook_event_name === 'Notification') {
+      title = 'Claude needs you'
+      body = input.message || folder
+    } else {
+      title = 'Claude finished'
+    }
+  }
+
+  $.NSDistributedNotificationCenter.defaultCenter.postNotificationNameObjectUserInfoDeliverImmediately(
+    'com.notchplayer.notify', 'notch-notify', $({ app: app, appPath: appPath || '', title: title, body: body }), true)
+  // Cursor expects JSON on stdout.
+  return source === 'cursor' ? '{}' : ''
+}
+
+// Walks up the process tree to the first process inside an Applications
+// folder and returns that app's path, e.g. "/Applications/Cursor.app".
+// (The Claude app runs Claude Code from a copy in Application Support,
+// which is skipped.)
+function hostAppPath() {
+  const sa = Application.currentApplication()
+  sa.includeStandardAdditions = true
+  const roots = ['/Applications/', '/System/Applications/', $.NSHomeDirectory().js + '/Applications/']
+  let pid = $.NSProcessInfo.processInfo.processIdentifier
+  for (let i = 0; i < 25 && pid > 1; i++) {
+    let line
+    try {
+      line = sa.doShellScript('ps -o ppid=,comm= -p ' + pid).trim()
+    } catch (e) {
+      return null
+    }
+    const match = line.match(/^(\d+)\s+(.+)$/)
+    if (!match) return null
+    const bundle = match[2].match(/^(.*?\.app)\//)
+    if (bundle && roots.some(root => bundle[1].startsWith(root))) return bundle[1]
+    pid = parseInt(match[1], 10)
+  }
+  return null
+}

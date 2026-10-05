@@ -10,6 +10,13 @@ if [ ! -e "$ROOT/build/MediaRemoteAdapter.framework/MediaRemoteAdapter" ]; then
   "$ROOT/scripts/build-adapter.sh"
 fi
 
+# Rendered once; delete build/AppIcon.icns after changing make-icon.swift.
+if [ ! -f "$ROOT/build/AppIcon.icns" ]; then
+  rm -rf "$ROOT/build/AppIcon.iconset"
+  swift "$ROOT/scripts/make-icon.swift" "$ROOT/build/AppIcon.iconset"
+  iconutil -c icns "$ROOT/build/AppIcon.iconset" -o "$ROOT/build/AppIcon.icns"
+fi
+
 swift build -c "$CONFIG" --package-path "$ROOT"
 BIN_DIR=$(swift build -c "$CONFIG" --package-path "$ROOT" --show-bin-path)
 
@@ -17,7 +24,9 @@ rm -rf "$APP"
 mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources" "$APP/Contents/Frameworks"
 cp "$BIN_DIR/NotchPlayer" "$APP/Contents/MacOS/NotchPlayer"
 cp "$ROOT/App/Info.plist" "$APP/Contents/Info.plist"
+cp "$ROOT/build/AppIcon.icns" "$APP/Contents/Resources/AppIcon.icns"
 cp "$ROOT/vendor/mediaremote-adapter/bin/mediaremote-adapter.pl" "$APP/Contents/Resources/"
+cp "$ROOT/App/notch-notify" "$APP/Contents/Resources/"
 cp -R "$ROOT/build/MediaRemoteAdapter.framework" "$APP/Contents/Frameworks/"
 # macOS ties permissions (Accessibility, Calendar, Location) to the signature.
 # Ad-hoc signatures change on every build, so permissions reset; a real

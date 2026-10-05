@@ -212,6 +212,34 @@ struct OpenAppArtwork: View {
     }
 }
 
+/// A label followed directly by trailing content (e.g. buttons): the label
+/// takes only the width it needs, shrinking (and truncating) only when the
+/// trailing content would otherwise run out of room.
+struct HuggingRow: Layout {
+    var spacing: CGFloat
+
+    func sizeThatFits(proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) -> CGSize {
+        let (label, trailing) = sizes(proposal: proposal, subviews: subviews)
+        return CGSize(width: label.width + spacing + trailing.width, height: max(label.height, trailing.height))
+    }
+
+    func placeSubviews(in bounds: CGRect, proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) {
+        let (label, trailing) = sizes(proposal: proposal, subviews: subviews)
+        subviews[0].place(at: CGPoint(x: bounds.minX, y: bounds.midY), anchor: .leading,
+                          proposal: ProposedViewSize(label))
+        subviews[1].place(at: CGPoint(x: bounds.minX + label.width + spacing, y: bounds.midY), anchor: .leading,
+                          proposal: ProposedViewSize(trailing))
+    }
+
+    private func sizes(proposal: ProposedViewSize, subviews: Subviews) -> (label: CGSize, trailing: CGSize) {
+        precondition(subviews.count == 2, "HuggingRow takes a label and trailing content")
+        let trailing = subviews[1].sizeThatFits(.unspecified)
+        let room = max(0, (proposal.width ?? .infinity) - trailing.width - spacing)
+        let label = subviews[0].sizeThatFits(ProposedViewSize(width: room, height: proposal.height))
+        return (label, trailing)
+    }
+}
+
 func formatTime(_ seconds: TimeInterval) -> String {
     guard seconds.isFinite, seconds >= 0 else { return "--:--" }
     let total = Int(seconds)

@@ -8,8 +8,10 @@ struct NotchServices {
     let activities: ActivityCenter
     let battery: BatteryMonitor
     let calendar: CalendarService
+    let reminders: RemindersService
     let weather: WeatherService
     let mediaKeys: MediaKeyTap
+    let notifications: NotificationWatcher
     let settings: AppSettings
 }
 
@@ -18,6 +20,10 @@ struct NotchServices {
 final class NotchController: ObservableObject {
     @Published private(set) var metrics = NotchMetrics()
     @Published private(set) var isExpanded: Bool
+    /// The open panel shows recent notifications instead of the player.
+    @Published var showsNotifications = false {
+        didSet { if showsNotifications { services.notifications.markAllRead() } }
+    }
 
     let services: NotchServices
     let pointer = PointerState()
@@ -45,26 +51,28 @@ final class NotchController: ObservableObject {
 
     var showsSidebar: Bool {
         let settings = services.settings
-        return settings.showCalendar || (settings.showWeather && services.weather.current != nil)
+        return settings.showCalendar || settings.showReminders
+            || (settings.showWeather && services.weather.current != nil)
+    }
+
+    var hasUnread: Bool {
+        services.settings.showNotifications && services.notifications.unreadCount > 0
     }
 
     /// Whether the closed notch shows anything beyond the physical notch.
     var showsClosedContent: Bool {
-        services.player.hasMedia || services.activities.current != nil
+        services.player.hasMedia || services.activities.current != nil || hasUnread
     }
 
     var closedSize: CGSize {
-        let wing: CGFloat
         if let activity = services.activities.current {
-            wing = metrics.wing(for: activity)
-        } else {
-            wing = services.player.hasMedia ? metrics.wing : 0
+            return metrics.activitySize(for: activity)
         }
-        return metrics.closedSize(wing: wing)
+        return metrics.closedSize(wing: services.player.hasMedia || hasUnread ? metrics.wing : 0)
     }
 
     var expandedSize: CGSize {
-        metrics.expandedSize(hasMedia: services.player.hasMedia, hasSidebar: showsSidebar)
+        metrics.expandedSize(hasMedia: services.player.hasMedia || showsNotifications, hasSidebar: showsSidebar)
     }
 
     // MARK: - Panel
@@ -93,6 +101,17 @@ final class NotchController: ObservableObject {
         }) {
             monitors.append(monitor)
         }
+        // Scrolling goes to the window under the pointer, so the panel gets
+        // it even while another app is active.
+        if let monitor = NSEvent.addLocalMonitorForEvents(matching: .scrollWheel, handler: { [weak self] event in
+            if self?.isExpanded == true {
+                // Mouse wheels report lines, trackpads points.
+                self?.pointer.scrolled.send(event.scrollingDeltaY * (event.hasPreciseScrollingDeltas ? 1 : 12))
+            }
+            return event
+        }) {
+            monitors.append(monitor)
+        }
 
         // The hit area changes size when media, an alert or the sidebar comes or goes.
         let layoutChanges: [AnyPublisher<Void, Never>] = [
@@ -100,6 +119,8 @@ final class NotchController: ObservableObject {
             services.activities.$current.map { $0?.kind }.removeDuplicates().map { _ in }.eraseToAnyPublisher(),
             services.settings.objectWillChange.eraseToAnyPublisher(),
             services.weather.$current.map { $0 != nil }.removeDuplicates().map { _ in }.eraseToAnyPublisher(),
+            services.notifications.$unreadCount.map { $0 > 0 }.removeDuplicates().map { _ in }.eraseToAnyPublisher(),
+            $showsNotifications.removeDuplicates().map { _ in }.eraseToAnyPublisher(),
         ]
         Publishers.MergeMany(layoutChanges)
             .receive(on: RunLoop.main)
@@ -146,7 +167,16 @@ final class NotchController: ObservableObject {
         let animation: Animation = expanded
             ? .spring(response: 0.3, dampingFraction: 0.66)
             : .easeOut(duration: 0.15)
-        withAnimation(animation) { isExpanded = expanded }
+        withAnimation(animation) {
+            if expanded, case .notification = services.activities.current {
+                // Hovering a new notification opens straight to the list.
+                showsNotifications = true
+                services.activities.hide()
+            } else if !expanded {
+                showsNotifications = false
+            }
+            isExpanded = expanded
+        }
         pointerMoved()
     }
 

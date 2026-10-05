@@ -7,6 +7,7 @@ struct NotchView: View {
     @ObservedObject private var settings: AppSettings
     @ObservedObject private var weather: WeatherService
     @ObservedObject private var mediaKeys: MediaKeyTap
+    @ObservedObject private var notifications: NotificationWatcher
     @State private var opensAtLogin = LoginItem.isEnabled
 
     init(controller: NotchController) {
@@ -17,13 +18,16 @@ struct NotchView: View {
         _settings = ObservedObject(wrappedValue: services.settings)
         _weather = ObservedObject(wrappedValue: services.weather)
         _mediaKeys = ObservedObject(wrappedValue: services.mediaKeys)
+        _notifications = ObservedObject(wrappedValue: services.notifications)
     }
 
     var body: some View {
         let metrics = controller.metrics
         let expanded = controller.isExpanded
         let size = expanded ? controller.expandedSize : controller.closedSize
-        let shape = NotchShape(topRadius: metrics.ear, bottomRadius: expanded ? 26 : 10)
+        // Taller than the notch: open, or a notification dropping down.
+        let dropsDown = size.height > metrics.notchHeight
+        let shape = NotchShape(topRadius: metrics.ear, bottomRadius: expanded ? 26 : dropsDown ? 20 : 10)
 
         // Content is laid out at its final size and revealed by the clip as
         // the shape grows, so text never reflows mid-animation.
@@ -32,18 +36,20 @@ struct NotchView: View {
                 ExpandedNotchView(metrics: metrics,
                                   size: controller.expandedSize,
                                   showsSidebar: controller.showsSidebar,
+                                  showsNotifications: $controller.showsNotifications,
                                   services: controller.services)
                     .frame(width: controller.expandedSize.width, height: controller.expandedSize.height)
                     .transition(.asymmetric(
                         insertion: .opacity.combined(with: .scale(scale: 0.9, anchor: .top)).animation(.easeOut(duration: 0.16).delay(0.03)),
                         removal: .opacity.animation(.easeIn(duration: 0.06))))
             } else if let activity = activities.current {
-                ActivityView(activity: activity, metrics: metrics)
-                    .frame(width: controller.closedSize.width, height: metrics.notchHeight)
+                ActivityView(activity: activity, metrics: metrics, showsPreview: settings.notificationPreviews)
+                    .frame(width: controller.closedSize.width, height: controller.closedSize.height)
                     .id(activity.kind)
                     .transition(.opacity.animation(.easeOut(duration: 0.15)))
-            } else if player.hasMedia {
-                ClosedNotchView(metrics: metrics, player: player)
+            } else if player.hasMedia || controller.hasUnread {
+                ClosedNotchView(metrics: metrics, player: player, notifications: notifications,
+                                showsUnread: controller.hasUnread)
                     .frame(width: metrics.closedSize(wing: metrics.wing).width, height: metrics.notchHeight)
                     .transition(.opacity)
             }
@@ -51,7 +57,6 @@ struct NotchView: View {
         .frame(width: size.width, height: size.height, alignment: .top)
         .background(shape.fill(.black))
         .clipShape(shape)
-        .shadow(color: .black.opacity(expanded ? 0.6 : 0), radius: 18, y: 8)
         // With nothing to show the physical notch already looks right.
         .opacity(expanded || controller.showsClosedContent ? 1 : 0)
         .contextMenu { menu }
@@ -62,6 +67,7 @@ struct NotchView: View {
         .environmentObject(controller.pointer)
         .animation(.spring(response: 0.3, dampingFraction: 0.72), value: player.hasMedia)
         .animation(.spring(response: 0.32, dampingFraction: 0.7), value: activities.current?.kind)
+        .animation(.spring(response: 0.3, dampingFraction: 0.72), value: controller.hasUnread)
     }
 
     @ViewBuilder private var menu: some View {
@@ -71,9 +77,16 @@ struct NotchView: View {
         Divider()
         Section("Show in Notch") {
             Toggle("Calendar", isOn: $settings.showCalendar)
+            Toggle("Reminders", isOn: $settings.showReminders)
             Toggle("Weather", isOn: $settings.showWeather)
             Toggle("Volume & Brightness", isOn: $settings.notchHUD)
-            if settings.notchHUD && !mediaKeys.hasAccess {
+            Toggle("Notifications", isOn: $settings.showNotifications)
+            if settings.showNotifications {
+                Toggle("Message Previews", isOn: $settings.notificationPreviews)
+                Toggle("Hide macOS Pop-ups", isOn: $settings.hideSystemBanners)
+            }
+            if (settings.notchHUD && !mediaKeys.hasAccess)
+                || (settings.showNotifications && !notifications.hasAccess) {
                 Button("Allow Accessibility Access…") { mediaKeys.openAccessibilitySettings() }
             }
         }
@@ -82,19 +95,47 @@ struct NotchView: View {
     }
 }
 
-/// Artwork on the left of the notch, equalizer on the right.
+/// Artwork on the left of the notch, equalizer on the right, with a dot for
+/// unread notifications. With nothing playing: the latest notification's app
+/// and the unread count.
 private struct ClosedNotchView: View {
     let metrics: NotchMetrics
     @ObservedObject var player: NowPlayingService
+    @ObservedObject var notifications: NotificationWatcher
+    let showsUnread: Bool
 
     var body: some View {
         HStack(spacing: 0) {
-            ArtworkView(image: player.artwork, size: metrics.notchHeight - 12, cornerRadius: 6)
-                .frame(width: metrics.wing)
+            Group {
+                if player.hasMedia {
+                    ArtworkView(image: player.artwork, size: metrics.notchHeight - 12, cornerRadius: 6)
+                        .overlay(alignment: .topTrailing) {
+                            if showsUnread {
+                                UnreadDot()
+                                    .offset(x: 3, y: -3)
+                                    .transition(.scale.combined(with: .opacity))
+                            }
+                        }
+                } else if let latest = notifications.recent.first {
+                    AppIcon(image: latest.icon, size: metrics.notchHeight - 12)
+                }
+            }
+            .frame(width: metrics.wing)
             Spacer(minLength: 0)
-            EqualizerBars(isPlaying: player.isPlaying, color: player.accentColor)
-                .frame(width: 13, height: metrics.notchHeight * 0.3)
-                .frame(width: metrics.wing)
+            Group {
+                if player.hasMedia {
+                    EqualizerBars(isPlaying: player.isPlaying, color: player.accentColor)
+                        .frame(width: 13, height: metrics.notchHeight * 0.3)
+                } else {
+                    Text("\(notifications.unreadCount)")
+                        .font(.system(size: 11, weight: .semibold).monospacedDigit())
+                        .foregroundStyle(.white)
+                        .padding(.horizontal, 6)
+                        .frame(minWidth: 18, minHeight: 18)
+                        .background(Capsule().fill(unreadBlue))
+                }
+            }
+            .frame(width: metrics.wing)
         }
         .padding(.horizontal, metrics.ear)
     }
@@ -104,32 +145,47 @@ private struct ExpandedNotchView: View {
     let metrics: NotchMetrics
     let size: CGSize
     let showsSidebar: Bool
+    @Binding var showsNotifications: Bool
     let services: NotchServices
     @ObservedObject private var player: NowPlayingService
     @ObservedObject private var battery: BatteryMonitor
     @ObservedObject private var settings: AppSettings
+    @ObservedObject private var notifications: NotificationWatcher
+    @State private var titleRowWidth: CGFloat = 0
+    @State private var revealingTitle = false
 
     /// Height of the player block: artwork row, gap, progress row. The
     /// sidebar matches it so both columns start and end together.
     static let contentHeight: CGFloat = 64 + 12 + 14
 
-    init(metrics: NotchMetrics, size: CGSize, showsSidebar: Bool, services: NotchServices) {
+    init(metrics: NotchMetrics, size: CGSize, showsSidebar: Bool, showsNotifications: Binding<Bool>,
+         services: NotchServices) {
         self.metrics = metrics
         self.size = size
         self.showsSidebar = showsSidebar
+        _showsNotifications = showsNotifications
         self.services = services
         _player = ObservedObject(wrappedValue: services.player)
         _battery = ObservedObject(wrappedValue: services.battery)
         _settings = ObservedObject(wrappedValue: services.settings)
+        _notifications = ObservedObject(wrappedValue: services.notifications)
+    }
+
+    /// The notifications list is only offered while there's something in it.
+    private var listingNotifications: Bool {
+        showsNotifications && settings.showNotifications && !notifications.recent.isEmpty
     }
 
     var body: some View {
         VStack(spacing: 0) {
             header
                 .frame(height: metrics.notchHeight)
-            HStack(alignment: .top, spacing: 18) {
+            HStack(alignment: .top, spacing: 36) {
                 Group {
-                    if player.hasMedia {
+                    if listingNotifications {
+                        NotificationList(watcher: notifications, showsPreview: settings.notificationPreviews)
+                            .frame(height: Self.contentHeight)
+                    } else if player.hasMedia {
                         nowPlaying
                     } else {
                         nothingPlaying
@@ -138,8 +194,10 @@ private struct ExpandedNotchView: View {
                 .frame(maxWidth: .infinity)
                 if showsSidebar {
                     SidebarView(calendar: services.calendar,
+                                reminders: services.reminders,
                                 weather: services.weather,
                                 showsCalendar: settings.showCalendar,
+                                showsReminders: settings.showReminders,
                                 showsWeather: settings.showWeather)
                         .frame(width: 200, height: Self.contentHeight)
                 }
@@ -151,33 +209,65 @@ private struct ExpandedNotchView: View {
         .padding(.bottom, 14)
     }
 
-    /// Source app and a playing indicator left of the notch, battery right of it.
+    /// Source app and a playing indicator (or the notifications title) left
+    /// of the notch; notifications bell and battery right of it.
     private var header: some View {
         let side = max(0, (size.width - metrics.notchWidth) / 2 - metrics.ear - 26)
         return HStack(spacing: 0) {
-            HStack(spacing: 6) {
-                if let icon = player.sourceIcon {
-                    Image(nsImage: icon)
-                        .resizable()
-                        .frame(width: 14, height: 14)
-                }
-                if let name = player.sourceName {
-                    Text(name)
-                        .font(.system(size: 11, weight: .medium))
-                        .foregroundStyle(.white.opacity(0.5))
-                        .lineLimit(1)
-                }
-                if player.hasMedia {
-                    EqualizerBars(isPlaying: player.isPlaying, color: player.accentColor)
-                        .frame(width: 12, height: 10)
-                        .padding(.leading, 1)
+            Group {
+                if listingNotifications {
+                    notificationsTitle
+                } else {
+                    playerTitle
                 }
             }
             .frame(width: side, alignment: .leading)
             Spacer(minLength: 0)
-            if battery.hasBattery {
-                batteryStatus
-                    .frame(width: side, alignment: .trailing)
+            HStack(spacing: 10) {
+                if settings.showNotifications && !notifications.recent.isEmpty {
+                    BellButton(unread: notifications.unreadCount, isActive: listingNotifications) {
+                        withAnimation(.easeOut(duration: 0.15)) { showsNotifications.toggle() }
+                    }
+                }
+                if battery.hasBattery {
+                    batteryStatus
+                }
+            }
+            .frame(width: side, alignment: .trailing)
+        }
+    }
+
+    private var notificationsTitle: some View {
+        HStack(spacing: 8) {
+            Text("Notifications")
+                .font(.system(size: 11, weight: .semibold))
+                .foregroundStyle(.white.opacity(0.7))
+            HeaderTextButton(title: "Clear") {
+                withAnimation(.easeOut(duration: 0.15)) {
+                    notifications.clear()
+                    showsNotifications = false
+                }
+            }
+        }
+    }
+
+    private var playerTitle: some View {
+        HStack(spacing: 6) {
+            if let icon = player.sourceIcon {
+                Image(nsImage: icon)
+                    .resizable()
+                    .frame(width: 14, height: 14)
+            }
+            if let name = player.sourceName {
+                Text(name)
+                    .font(.system(size: 11, weight: .medium))
+                    .foregroundStyle(.white.opacity(0.5))
+                    .lineLimit(1)
+            }
+            if player.hasMedia {
+                EqualizerBars(isPlaying: player.isPlaying, color: player.accentColor)
+                    .frame(width: 12, height: 10)
+                    .padding(.leading, 1)
             }
         }
     }
@@ -200,17 +290,16 @@ private struct ExpandedNotchView: View {
         VStack(spacing: 12) {
             HStack(spacing: 14) {
                 OpenAppArtwork(image: player.artwork, size: 64) { player.openSourceApp() }
-                VStack(alignment: .leading, spacing: 2) {
-                    Text(player.title)
-                        .font(.system(size: 14, weight: .semibold))
-                        .foregroundStyle(.white)
-                    Text(player.artist)
-                        .font(.system(size: 12))
-                        .foregroundStyle(.white.opacity(0.55))
+                // Controls sit right after the title instead of at the far edge.
+                HuggingRow(spacing: 18) {
+                    TrackTitle(title: player.title, artist: player.artist,
+                               revealWidth: titleRowWidth, revealing: $revealingTitle)
+                    controls
+                        .opacity(revealingTitle ? 0 : 1)
+                        .animation(.easeOut(duration: 0.15), value: revealingTitle)
                 }
-                .lineLimit(1)
                 .frame(maxWidth: .infinity, alignment: .leading)
-                controls
+                .onGeometryChange(for: CGFloat.self) { $0.size.width } action: { titleRowWidth = $0 }
             }
             TimelineView(.periodic(from: .now, by: 0.5)) { context in
                 let elapsed = player.elapsed(at: context.date)
@@ -272,5 +361,58 @@ private struct ExpandedNotchView: View {
             .font(.system(size: 10, weight: .medium).monospacedDigit())
             .foregroundStyle(.white.opacity(0.4))
             .frame(width: 32, alignment: alignment)
+    }
+}
+
+/// Title and artist. When the title is cut off, hovering it shows the whole
+/// title in place of the controls next to it.
+private struct TrackTitle: View {
+    let title: String
+    let artist: String
+    /// How far the full title may extend when revealed.
+    let revealWidth: CGFloat
+    /// Set while the full title is showing, so the controls can step aside.
+    @Binding var revealing: Bool
+
+    @State private var hovering = false
+    @State private var shownWidth: CGFloat = 0
+    @State private var fullWidth: CGFloat = 0
+
+    private var isTruncated: Bool { fullWidth > shownWidth + 0.5 }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 2) {
+            titleText
+                // The cut-off version would show through the full one.
+                .opacity(hovering && isTruncated ? 0 : 1)
+                .onGeometryChange(for: CGFloat.self) { $0.size.width } action: { shownWidth = $0 }
+                .background(alignment: .leading) {
+                    titleText
+                        .fixedSize()
+                        .hidden()
+                        .onGeometryChange(for: CGFloat.self) { $0.size.width } action: { fullWidth = $0 }
+                }
+                .overlay(alignment: .leading) {
+                    if hovering && isTruncated {
+                        titleText
+                            .frame(width: min(fullWidth, revealWidth), alignment: .leading)
+                            .allowsHitTesting(false)
+                            .transition(.opacity)
+                    }
+                }
+                .onPointerHover { hovering = $0 }
+                .onChange(of: hovering && isTruncated) { _, reveal in revealing = reveal }
+                .animation(.easeOut(duration: 0.15), value: hovering)
+            Text(artist)
+                .font(.system(size: 12))
+                .foregroundStyle(.white.opacity(0.55))
+        }
+        .lineLimit(1)
+    }
+
+    private var titleText: some View {
+        Text(title)
+            .font(.system(size: 14, weight: .semibold))
+            .foregroundStyle(.white)
     }
 }

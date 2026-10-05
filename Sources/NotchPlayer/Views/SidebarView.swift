@@ -1,26 +1,30 @@
 import SwiftUI
 
-/// Weather and upcoming events as two cards to the right of the player.
-/// Each card opens its app when clicked.
+/// Weather, and today's events and reminders, as two cards to the right of
+/// the player. Each card opens its app when clicked.
 struct SidebarView: View {
     @ObservedObject var calendar: CalendarService
+    @ObservedObject var reminders: RemindersService
     @ObservedObject var weather: WeatherService
     let showsCalendar: Bool
+    let showsReminders: Bool
     let showsWeather: Bool
 
     var body: some View {
         let conditions = showsWeather ? weather.current : nil
+        let showsAgenda = showsCalendar || showsReminders
         VStack(spacing: 6) {
             if let conditions {
                 GlanceCard(action: openWeatherApp) {
-                    WeatherSummary(conditions: conditions, large: !showsCalendar)
+                    WeatherSummary(conditions: conditions, large: !showsAgenda)
                 }
-                // A fixed height leaves the rest to the calendar.
-                .frame(height: showsCalendar ? 40 : nil)
+                // A fixed height leaves the rest to the agenda.
+                .frame(height: showsAgenda ? 40 : nil)
             }
-            if showsCalendar {
-                GlanceCard(action: calendar.access == .granted ? calendar.openCalendarApp : calendar.requestAccess) {
-                    EventsSummary(calendar: calendar, maxRows: conditions == nil ? 4 : 2)
+            if showsAgenda {
+                GlanceCard(action: openAgendaApp) {
+                    AgendaSummary(calendar: calendar, reminders: reminders,
+                                  showsCalendar: showsCalendar, showsReminders: showsReminders)
                 }
             }
         }
@@ -29,6 +33,15 @@ struct SidebarView: View {
     private func openWeatherApp() {
         guard let url = NSWorkspace.shared.urlForApplication(withBundleIdentifier: "com.apple.weather") else { return }
         NSWorkspace.shared.openApplication(at: url, configuration: NSWorkspace.OpenConfiguration())
+    }
+
+    /// Calendar, or Reminders when only reminders are shown.
+    private func openAgendaApp() {
+        if showsCalendar {
+            calendar.access == .granted ? calendar.openCalendarApp() : calendar.requestAccess()
+        } else {
+            reminders.access == .granted ? reminders.openRemindersApp() : reminders.requestAccess()
+        }
     }
 }
 
@@ -83,41 +96,131 @@ private struct WeatherSummary: View {
     }
 }
 
-private struct EventsSummary: View {
+/// Events for the coming week and unfinished reminders, by day: today
+/// (no heading), Tomorrow, the next weekdays, Later, and No date. Scrolls.
+private struct AgendaSummary: View {
     @ObservedObject var calendar: CalendarService
-    let maxRows: Int
+    @ObservedObject var reminders: RemindersService
+    let showsCalendar: Bool
+    let showsReminders: Bool
+
+    private struct AccessPrompt {
+        let symbol: String
+        let title: String
+        let action: () -> Void
+    }
 
     var body: some View {
-        switch calendar.access {
-        case .granted:
-            TimelineView(.everyMinute) { context in
-                if !calendar.today.isEmpty {
-                    rows(calendar.today.prefix(maxRows), now: context.date)
-                } else if !calendar.tomorrow.isEmpty {
-                    VStack(alignment: .leading, spacing: 3) {
-                        Text("Tomorrow")
-                            .font(.system(size: 10, weight: .semibold))
-                            .foregroundStyle(.white.opacity(0.4))
-                        rows(calendar.tomorrow.prefix(maxRows - 1), now: context.date)
+        TimelineView(.everyMinute) { context in
+            let now = context.date
+            let prompts = accessPrompts
+            let sections = sections(now: now)
+            PanelScroll(centersWhenFits: true) {
+                VStack(alignment: .leading, spacing: 4) {
+                    ForEach(prompts, id: \.title) { prompt in
+                        placeholder(prompt.symbol, prompt.title)
+                            .contentShape(Rectangle())
+                            .onTapGesture(perform: prompt.action)
                     }
+                    ForEach(sections) { section in
+                        if let title = section.title {
+                            Text(title)
+                                .font(.system(size: 10, weight: .semibold))
+                                .foregroundStyle(.white.opacity(0.4))
+                                .padding(.top, section.id == sections.first?.id ? 0 : 3)
+                        }
+                        ForEach(section.items) { item in
+                            AgendaRow(item: item, now: now, isToday: section.isToday,
+                                      showsDate: section.showsDates) { open(item) }
+                        }
+                    }
+                    if prompts.isEmpty && sections.isEmpty {
+                        placeholder(showsCalendar ? "calendar" : "checklist", emptyText)
+                    }
+                }
+                .padding(.vertical, 6)
+            }
+        }
+    }
+
+    private var accessPrompts: [AccessPrompt] {
+        var prompts: [AccessPrompt] = []
+        if showsCalendar && calendar.access != .granted {
+            prompts.append(AccessPrompt(symbol: "calendar", title: "Allow calendar access",
+                                        action: calendar.requestAccess))
+        }
+        if showsReminders && reminders.access != .granted {
+            prompts.append(AccessPrompt(symbol: "checklist", title: "Allow reminders access",
+                                        action: reminders.requestAccess))
+        }
+        return prompts
+    }
+
+    private var emptyText: String {
+        switch (showsCalendar, showsReminders) {
+        case (true, true): "Nothing coming up"
+        case (true, false): "No events this week"
+        default: "No reminders"
+        }
+    }
+
+    private func sections(now: Date) -> [AgendaSection] {
+        let cal = Calendar.current
+        let today = cal.startOfDay(for: now)
+        guard let tomorrow = cal.date(byAdding: .day, value: 1, to: today),
+              let endOfWeek = cal.date(byAdding: .day, value: 7, to: today) else { return [] }
+
+        var byDay: [Date: [AgendaItem]] = [:]
+        var later: [AgendaItem] = []
+        var undated: [AgendaItem] = []
+        if showsCalendar && calendar.access == .granted {
+            for event in calendar.today + calendar.tomorrow + calendar.later {
+                // Events that started earlier and are still going count as today.
+                byDay[max(cal.startOfDay(for: event.start), today), default: []].append(.event(event))
+            }
+        }
+        if showsReminders && reminders.access == .granted {
+            for reminder in reminders.incomplete {
+                guard let due = reminder.due else {
+                    undated.append(.reminder(reminder))
+                    continue
+                }
+                let day = reminder.isOverdue(now: now) ? today : cal.startOfDay(for: due)
+                if day < endOfWeek {
+                    byDay[day, default: []].append(.reminder(reminder))
                 } else {
-                    placeholder("No events today")
+                    later.append(.reminder(reminder))
                 }
             }
-        case .notAsked, .denied:
-            placeholder("Allow calendar access")
+        }
+
+        var sections = byDay.keys.sorted().map { day in
+            let title: String? = day == today ? nil
+                : day == tomorrow ? "Tomorrow"
+                : day.formatted(.dateTime.weekday(.wide))
+            let items = byDay[day, default: []].sorted { $0.sortKey(now: now) < $1.sortKey(now: now) }
+            return AgendaSection(id: "day-\(day.timeIntervalSince1970)", title: title, items: items,
+                                 isToday: day == today)
+        }
+        if !later.isEmpty {
+            sections.append(AgendaSection(id: "later", title: "Later", items: later, showsDates: true))
+        }
+        if !undated.isEmpty {
+            sections.append(AgendaSection(id: "undated", title: "No date", items: undated))
+        }
+        return sections
+    }
+
+    private func open(_ item: AgendaItem) {
+        switch item {
+        case .event: calendar.openCalendarApp()
+        case .reminder: reminders.openRemindersApp()
         }
     }
 
-    private func rows(_ events: ArraySlice<CalendarService.Event>, now: Date) -> some View {
-        VStack(alignment: .leading, spacing: 4) {
-            ForEach(events) { EventRow(event: $0, now: now) }
-        }
-    }
-
-    private func placeholder(_ text: String) -> some View {
+    private func placeholder(_ symbol: String, _ text: String) -> some View {
         HStack(spacing: 7) {
-            Image(systemName: "calendar")
+            Image(systemName: symbol)
                 .font(.system(size: 12, weight: .medium))
             Text(text)
                 .font(.system(size: 11, weight: .medium))
@@ -126,32 +229,107 @@ private struct EventsSummary: View {
     }
 }
 
-private struct EventRow: View {
-    let event: CalendarService.Event
-    let now: Date
+private struct AgendaSection: Identifiable {
+    let id: String
+    let title: String?
+    let items: [AgendaItem]
+    var isToday = false
+    /// Rows show their date (the Later section), not just a time.
+    var showsDates = false
+}
 
-    private var isHappening: Bool { !event.isAllDay && event.start <= now }
+private enum AgendaItem: Identifiable {
+    case event(CalendarService.Event)
+    case reminder(RemindersService.Reminder)
 
-    private var time: String {
-        if event.isAllDay { return "All day" }
-        if isHappening { return "Now" }
-        return event.start.formatted(date: .omitted, time: .shortened)
+    var id: String {
+        switch self {
+        case let .event(event): "event-" + event.id
+        case let .reminder(reminder): "reminder-" + reminder.id
+        }
     }
+
+    /// Overdue and happening now first, then by time, then all-day items.
+    func sortKey(now: Date) -> (Int, Date) {
+        switch self {
+        case let .event(event):
+            event.isAllDay ? (2, event.start) : (event.start <= now ? 0 : 1, event.start)
+        case let .reminder(reminder):
+            reminder.isOverdue(now: now)
+                ? (0, reminder.due ?? now)
+                : (reminder.hasTime ? 1 : 2, reminder.due ?? .distantFuture)
+        }
+    }
+}
+
+/// An event (colored bar) or reminder (open circle, like in Reminders), with
+/// its time or date on the right.
+private struct AgendaRow: View {
+    let item: AgendaItem
+    let now: Date
+    let isToday: Bool
+    let showsDate: Bool
+    let action: () -> Void
+
+    @Environment(\.hoverClip) private var clip
+
+    private static let green = Color(red: 0.25, green: 0.85, blue: 0.4)
+    private static let red = Color(red: 1, green: 0.38, blue: 0.33)
 
     var body: some View {
         HStack(spacing: 7) {
-            Capsule()
-                .fill(Color(nsColor: event.color))
-                .frame(width: 3, height: 10)
-            Text(event.title)
+            marker
+                .frame(width: 9)
+            Text(title)
                 .font(.system(size: 11.5, weight: .medium))
                 .foregroundStyle(.white.opacity(0.85))
                 .lineLimit(1)
             Spacer(minLength: 4)
-            Text(time)
+            Text(label.text)
                 .font(.system(size: 10, weight: .medium).monospacedDigit())
-                .foregroundStyle(isHappening ? Color(red: 0.25, green: 0.85, blue: 0.4) : .white.opacity(0.4))
+                .foregroundStyle(label.color)
                 .fixedSize()
+        }
+        .contentShape(Rectangle())
+        // Rows scrolled out of view are still laid out; ignore clicks there.
+        .onTapGesture(coordinateSpace: .named(PanelSpace.name)) { location in
+            if clip?.contains(location) ?? true { action() }
+        }
+    }
+
+    @ViewBuilder private var marker: some View {
+        switch item {
+        case let .event(event):
+            Capsule()
+                .fill(Color(nsColor: event.color))
+                .frame(width: 3, height: 10)
+        case let .reminder(reminder):
+            Circle()
+                .strokeBorder(Color(nsColor: reminder.color), lineWidth: 1.5)
+                .frame(width: 9, height: 9)
+        }
+    }
+
+    private var title: String {
+        switch item {
+        case let .event(event): event.title
+        case let .reminder(reminder): reminder.title
+        }
+    }
+
+    private var label: (text: String, color: Color) {
+        let quiet = Color.white.opacity(0.4)
+        switch item {
+        case let .event(event):
+            if event.isAllDay { return ("All day", quiet) }
+            if isToday && event.start <= now { return ("Now", Self.green) }
+            return (event.start.formatted(date: .omitted, time: .shortened), quiet)
+        case let .reminder(reminder):
+            guard let due = reminder.due else { return ("", quiet) }
+            if reminder.isOverdue(now: now) { return ("Overdue", Self.red) }
+            if showsDate { return (due.formatted(.dateTime.month(.abbreviated).day()), quiet) }
+            if reminder.hasTime { return (due.formatted(date: .omitted, time: .shortened), quiet) }
+            return (isToday ? "Today" : "", quiet)
         }
     }
 }

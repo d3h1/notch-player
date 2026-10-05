@@ -7,9 +7,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private let activities = ActivityCenter()
     private let battery = BatteryMonitor()
     private let calendar = CalendarService()
+    private let reminders = RemindersService()
     private let weather = WeatherService()
     private let mediaKeys = MediaKeyTap()
     private let audioOutput = AudioOutputMonitor()
+    private let notifications = NotificationWatcher()
     private var notch: NotchController?
     private var signalSources: [DispatchSourceSignal] = []
     private var cancellables = Set<AnyCancellable>()
@@ -34,14 +36,19 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // `--pin-expanded` keeps the panel open, handy for working on the layout.
         let pinExpanded = CommandLine.arguments.contains("--pin-expanded")
         let services = NotchServices(player: player, activities: activities, battery: battery,
-                                     calendar: calendar, weather: weather, mediaKeys: mediaKeys,
-                                     settings: settings)
+                                     calendar: calendar, reminders: reminders, weather: weather, mediaKeys: mediaKeys,
+                                     notifications: notifications, settings: settings)
         let controller = NotchController(services: services, pinExpanded: pinExpanded)
         controller.show()
         notch = controller
         #if DEBUG
         if let flag = CommandLine.arguments.first(where: { $0.hasPrefix("--sample-data") }) {
-            SampleData.load(into: services, empty: flag.hasSuffix("=empty"))
+            let variant = flag.split(separator: "=").dropFirst().first.map(String.init) ?? ""
+            SampleData.load(into: services, variant: variant)
+            if variant == "notification", let first = notifications.recent.first {
+                activities.show(.notification(first), for: 600)
+            }
+            controller.showsNotifications = variant == "notifications"
             return
         }
         #endif
@@ -78,6 +85,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             activities.show(.audioOutput(name: name, symbol: symbol), for: 3)
         }
         audioOutput.start()
+
+        notifications.onNew = { [activities] notification in
+            activities.show(.notification(notification), for: 5)
+        }
     }
 
     /// Starts each optional feature now if it's on, and again whenever it's
@@ -87,8 +98,19 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             .sink { [calendar] on in if on { calendar.start() } }
             .store(in: &cancellables)
 
+        settings.$showReminders.removeDuplicates()
+            .sink { [reminders] on in if on { reminders.start() } }
+            .store(in: &cancellables)
+
         settings.$showWeather.removeDuplicates()
             .sink { [weather] on in on ? weather.start() : weather.stop() }
+            .store(in: &cancellables)
+
+        settings.$showNotifications.removeDuplicates()
+            .sink { [notifications] on in on ? notifications.start() : notifications.stop() }
+            .store(in: &cancellables)
+        settings.$hideSystemBanners
+            .sink { [notifications] on in notifications.closesBanners = on }
             .store(in: &cancellables)
 
         // Show the Accessibility prompt once on launch; after that only when

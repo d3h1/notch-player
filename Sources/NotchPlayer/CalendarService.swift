@@ -1,8 +1,8 @@
 import AppKit
 import EventKit
 
-/// Today's remaining events and tomorrow's, from every calendar in the
-/// Calendar app.
+/// The coming week's events, from every calendar in the Calendar app:
+/// what's left of today, tomorrow, and the five days after.
 final class CalendarService: ObservableObject {
     struct Event: Identifiable, Equatable {
         let id: String
@@ -20,6 +20,7 @@ final class CalendarService: ObservableObject {
     @Published private(set) var access: Access = .notAsked
     @Published private(set) var today: [Event] = []
     @Published private(set) var tomorrow: [Event] = []
+    @Published private(set) var later: [Event] = []
 
     private let store = EKEventStore()
     private var observer: NSObjectProtocol?
@@ -76,9 +77,10 @@ final class CalendarService: ObservableObject {
         let calendar = Calendar.current
         let startOfToday = calendar.startOfDay(for: now)
         guard let startOfTomorrow = calendar.date(byAdding: .day, value: 1, to: startOfToday),
-              let endOfTomorrow = calendar.date(byAdding: .day, value: 2, to: startOfToday) else { return }
+              let endOfTomorrow = calendar.date(byAdding: .day, value: 2, to: startOfToday),
+              let endOfWeek = calendar.date(byAdding: .day, value: 7, to: startOfToday) else { return }
 
-        let predicate = store.predicateForEvents(withStart: startOfToday, end: endOfTomorrow, calendars: nil)
+        let predicate = store.predicateForEvents(withStart: startOfToday, end: endOfWeek, calendars: nil)
         let events = store.events(matching: predicate)
             .filter { event in
                 event.endDate > now
@@ -98,18 +100,21 @@ final class CalendarService: ObservableObject {
             .sorted { ($0.isAllDay ? 1 : 0, $0.start) < ($1.isAllDay ? 1 : 0, $1.start) }
 
         let newToday = events.filter { $0.start < startOfTomorrow }
-        let newTomorrow = events.filter { $0.start >= startOfTomorrow }
+        let newTomorrow = events.filter { $0.start >= startOfTomorrow && $0.start < endOfTomorrow }
+        let newLater = events.filter { $0.start >= endOfTomorrow }
         if newToday != today { today = newToday }
         if newTomorrow != tomorrow { tomorrow = newTomorrow }
+        if newLater != later { later = newLater }
     }
 }
 
 #if DEBUG
 extension CalendarService {
-    func loadSample(today: [Event], tomorrow: [Event] = []) {
+    func loadSample(today: [Event], tomorrow: [Event] = [], later: [Event] = []) {
         access = .granted
         self.today = today
         self.tomorrow = tomorrow
+        self.later = later
     }
 }
 #endif

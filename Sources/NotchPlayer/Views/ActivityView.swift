@@ -5,22 +5,27 @@ import SwiftUI
 struct ActivityView: View {
     let activity: NotchActivity
     let metrics: NotchMetrics
+    let showsPreview: Bool
 
     private static let green = Color(red: 0.25, green: 0.85, blue: 0.4)
     private static let red = Color(red: 1, green: 0.27, blue: 0.23)
 
     var body: some View {
-        // 12pt from the outer edge, 8pt clear of the notch.
-        let side = metrics.wing(for: activity) - 20
-        HStack(spacing: 0) {
-            leading
-                .frame(width: side, alignment: .leading)
-            Spacer(minLength: 0)
-            trailing
-                .frame(width: side, alignment: .trailing)
+        if case let .notification(notification) = activity {
+            NotificationPill(notification: notification, metrics: metrics, showsPreview: showsPreview)
+        } else {
+            // 12pt from the outer edge, 8pt clear of the notch.
+            let side = metrics.wing(for: activity) - 20
+            HStack(spacing: 0) {
+                leading
+                    .frame(width: side, alignment: .leading)
+                Spacer(minLength: 0)
+                trailing
+                    .frame(width: side, alignment: .trailing)
+            }
+            .padding(.horizontal, metrics.ear + 12)
+            .frame(height: metrics.notchHeight)
         }
-        .padding(.horizontal, metrics.ear + 12)
-        .frame(height: metrics.notchHeight)
     }
 
     @ViewBuilder private var leading: some View {
@@ -35,6 +40,8 @@ struct ActivityView: View {
             BatteryGlyph(percent: percent, tint: Self.red)
         case let .audioOutput(_, symbolName):
             symbol(symbolName, size: 15)
+        case .notification:
+            EmptyView()
         }
     }
 
@@ -53,6 +60,8 @@ struct ActivityView: View {
             label("\(percent)%", color: Self.red)
         case let .audioOutput(name, _):
             label(name)
+        case .notification:
+            EmptyView()
         }
     }
 

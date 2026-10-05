@@ -21,6 +21,15 @@ struct NotchMetrics: Equatable {
         }
     }
 
+    /// Size of the closed notch while an activity shows. A notification
+    /// drops down below the notch; everything else stays in the wings.
+    func activitySize(for activity: NotchActivity) -> CGSize {
+        if case .notification = activity {
+            return CGSize(width: max(400, notchWidth + 2 * ear + 180), height: notchHeight + 50)
+        }
+        return closedSize(wing: wing(for: activity))
+    }
+
     func closedSize(wing: CGFloat) -> CGSize {
         CGSize(width: notchWidth + 2 * ear + 2 * wing, height: notchHeight)
     }

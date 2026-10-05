@@ -6,6 +6,7 @@
   <key>CFBundleIdentifier</key><string>com.notchplayer.app</string>
   <key>CFBundleName</key><string>Notch Player</string>
   <key>CFBundleDisplayName</key><string>Notch Player</string>
+  <key>CFBundleIconFile</key><string>AppIcon</string>
   <key>CFBundlePackageType</key><string>APPL</string>
   <key>CFBundleShortVersionString</key><string>0.2.0</string>
   <key>CFBundleVersion</key><string>1</string>
@@ -14,6 +15,8 @@
   <key>NSHighResolutionCapable</key><true/>
   <key>NSCalendarsFullAccessUsageDescription</key><string>Shows your upcoming events when you hover over the notch.</string>
   <key>NSCalendarsUsageDescription</key><string>Shows your upcoming events when you hover over the notch.</string>
+  <key>NSRemindersFullAccessUsageDescription</key><string>Shows reminders due today when you hover over the notch.</string>
+  <key>NSRemindersUsageDescription</key><string>Shows reminders due today when you hover over the notch.</string>
   <key>NSLocationUsageDescription</key><string>Shows the weather where you are when you hover over the notch.</string>
   <key>NSLocationWhenInUseUsageDescription</key><string>Shows the weather where you are when you hover over the notch.</string>
 </dict>

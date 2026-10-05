@@ -7,9 +7,10 @@ enum NotchActivity: Equatable {
     case charging(percent: Int)
     case lowBattery(percent: Int)
     case audioOutput(name: String, symbol: String)
+    case notification(NotchNotification)
 
     enum Kind {
-        case volume, brightness, charging, lowBattery, audioOutput
+        case volume, brightness, charging, lowBattery, audioOutput, notification
     }
 
     /// Changing the value within a kind (e.g. volume going up) updates in
@@ -21,6 +22,7 @@ enum NotchActivity: Equatable {
         case .charging: .charging
         case .lowBattery: .lowBattery
         case .audioOutput: .audioOutput
+        case .notification: .notification
         }
     }
 }
@@ -36,5 +38,10 @@ final class ActivityCenter: ObservableObject {
         let work = DispatchWorkItem { [weak self] in self?.current = nil }
         hideWork = work
         DispatchQueue.main.asyncAfter(deadline: .now() + duration, execute: work)
+    }
+
+    func hide() {
+        hideWork?.cancel()
+        current = nil
     }
 }
